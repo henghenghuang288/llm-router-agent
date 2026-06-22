@@ -1,34 +1,78 @@
-# LLM Router Agent · 多模型智能路由
+# LLM Router Agent
 
-用户发一个任务请求，系统自动识别意图，路由到最合适的模型，记录选择理由、耗时、Token消耗。
+> 🇨🇳 [中文版见下方](#中文说明)
 
-## 意图类型与路由逻辑
+A multi-model intelligent routing system. Given a user request, it automatically classifies the intent and routes to the most appropriate model — tracking routing rationale, latency, and token cost for every call.
 
-| 意图 | 触发条件 | 路由目标 | 理由 |
-|------|----------|----------|------|
-| 代码任务 | 含"写代码/函数/debug/Python"等 | DeepSeek | 代码能力强且便宜 |
-| 推理分析 | 含"分析/对比/为什么/方案"等 | DeepSeek | 强推理能力 |
-| 创意写作 | 含"写文案/标题/爆款"等 | DeepSeek | 语言表达能力 |
-| 需要实时信息 | 含"今天/最新/查一下"等 | Claude | 支持web_search |
-| 简单问答 | 默认兜底 | DeepSeek | 快速低成本 |
+**Core idea:** Most requests can be classified by fast rules (zero latency, zero cost). Only ambiguous requests need LLM-based semantic classification. This two-tier approach maximizes accuracy while minimizing routing overhead.
 
-## 核心设计
+## Two-Tier Classification
 
-- **意图分类零延迟**：纯规则匹配，不调用额外API，不增加成本
-- **实时路由预测**：输入时前端实时预览路由决策，无需等待模型调用
-- **可观测性**：每次调用记录总耗时、模型延迟、Token消耗、路由理由
-- **多提供商降级**：DeepSeek → Claude → 离线模拟，API失败自动降级
+```
+User request
+    │
+    ▼
+[Tier 1] Rule-based classifier (regex patterns, ~0ms)
+    │
+    ├─ confidence=HIGH → route immediately
+    │
+    └─ confidence=LOW
+           │
+           ▼
+       [Tier 2] LLM semantic classifier (max_tokens=10, minimal cost)
+                    │
+                    ▼
+               Route to model
+```
 
-## 对应JD能力点
+## Intent Types & Routing
 
-比特鹰/木迪坡等JD里的"多模型接入层、意图路由、按任务分级选型、成本治理、可观测性"的具体实现。
+| Intent | Trigger signals | Target model | Rationale |
+|--------|----------------|--------------|-----------|
+| `code` | "写代码", "debug", "Python"... | DeepSeek | Strong code generation, cost-effective |
+| `reasoning` | "分析", "对比", "为什么"... | DeepSeek | Strong reasoning |
+| `creative` | "写文案", "爆款标题"... | DeepSeek | Strong language generation |
+| `search_needed` | "今天", "最新", "查一下"... | Claude | Has web_search tool |
+| `simple_qa` | Default fallback | DeepSeek | Fast & cheap |
 
-## 运行
+## Observability
+
+Every call records:
+- Total latency (ms)
+- Model latency vs. routing latency (separated)
+- Token consumption
+- Which classifier fired (rule / llm / rule_fallback)
+- Routing decision rationale
+
+This maps directly to "cost governance" and "observability" requirements in FDE job descriptions.
+
+## Stack
+
+Python · FastAPI · asyncio · DeepSeek/Claude/OpenAI-compatible · vanilla HTML/JS
+
+## Quick Start
 
 ```bash
 pip install -r requirements.txt
 export DEEPSEEK_API_KEY=sk-xxxx
 uvicorn backend.main:app --reload
+# open http://localhost:8000
 ```
 
-访问 http://localhost:8000
+## Relevance to FDE Roles
+
+This project demonstrates: multi-model ingestion layer · intent routing · per-task model selection · cost governance · observability · graceful degradation (offline simulation when no API key configured).
+
+---
+
+## 中文说明
+
+多模型智能路由系统。输入一个任务请求，两级分类器自动识别意图，路由到最合适的模型，记录每次路由决策理由、耗时、Token 消耗。
+
+**设计核心：**
+- 第一级规则分类，零延迟零成本，处理 80%+ 的明确请求
+- 第二级 LLM 语义分类，仅在规则置信度低时触发，max_tokens=10 严格控制成本
+- 前端实时显示路由预测（输入时即可看到意图分类结果，无需等待）
+- 完整可观测性：每次调用记录分类器来源、置信度、耗时、Token 消耗
+
+对应比特鹰等 FDE 岗位 JD 里的"多模型接入层、意图路由、按任务分级选型、成本治理"。
