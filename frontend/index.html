@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>LLM Router Agent</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0c10;--s1:#0d1117;--s2:#161b22;--ink:#e6edf3;--soft:#8b949e;--line:#21262d;
+  --purple:#a78bfa;--blue:#58a6ff;--green:#56d364;--amber:#e3b341;--red:#f85149;
+  --mono:'IBM Plex Mono',monospace;--body:'Inter',system-ui,sans-serif;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);min-height:100vh;}
+.top{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;
+  border-bottom:1px solid var(--line);background:var(--s1);}
+.brand{font-weight:700;font-size:17px;letter-spacing:-.02em;}
+.brand span{color:var(--purple);}
+.mode{font-family:var(--mono);font-size:11px;padding:4px 10px;border-radius:20px;
+  background:var(--line);color:var(--soft);}
+.mode.live{background:rgba(86,211,100,.12);color:var(--green);}
+.wrap{max-width:800px;margin:0 auto;padding:32px 24px;}
+.sub{color:var(--soft);font-size:13.5px;margin-bottom:24px;line-height:1.6;}
+.input-card{background:var(--s1);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:20px;}
+textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;
+  color:var(--ink);font-family:var(--mono);font-size:13px;padding:12px;resize:vertical;min-height:90px;line-height:1.6;}
+textarea:focus{outline:none;border-color:var(--purple);}
+.preview{font-family:var(--mono);font-size:12px;margin-top:10px;padding:8px 12px;
+  background:var(--s2);border-radius:6px;color:var(--soft);min-height:32px;}
+.preview .intent{color:var(--amber);}  .preview .model{color:var(--blue);}
+.btn{background:var(--purple);color:#fff;border:none;border-radius:8px;padding:11px 24px;
+  font-weight:600;font-size:14px;cursor:pointer;margin-top:12px;}
+.btn:hover:not(:disabled){filter:brightness(1.1);}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.result{background:var(--s1);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:14px;}
+.result-head{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+.tag{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:5px;font-weight:500;}
+.tag.intent{background:rgba(231,163,65,.15);color:var(--amber);}
+.tag.model{background:rgba(88,166,255,.15);color:var(--blue);}
+.tag.offline{background:var(--line);color:var(--soft);}
+.answer-box{background:var(--bg);border:1px solid var(--line);border-radius:8px;
+  padding:14px;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;}
+.obs{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:14px;}
+.obs-card{background:var(--s2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;}
+.obs-card .n{font-family:var(--mono);font-weight:600;font-size:18px;color:var(--purple);}
+.obs-card .l{font-size:11px;color:var(--soft);margin-top:2px;}
+.routing-box{background:var(--s2);border-left:3px solid var(--amber);border-radius:0 8px 8px 0;
+  padding:10px 14px;margin-top:12px;font-size:13px;color:var(--soft);line-height:1.6;}
+.routing-box b{color:var(--ink);}
+.history{margin-top:24px;}
+.history h3{font-family:var(--mono);font-size:12px;color:var(--soft);margin-bottom:12px;text-transform:uppercase;}
+.hist-item{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--s1);
+  border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;font-size:13px;}
+.hist-item:hover{border-color:var(--purple);}
+.hist-item .q{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.hist-item .t{font-family:var(--mono);font-size:11px;color:var(--soft);}
+.empty{text-align:center;color:var(--soft);padding:30px;font-size:14px;}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand">LLM <span>Router</span> Agent</div>
+  <div class="mode" id="modePill">检测中…</div>
+</div>
+<div class="wrap">
+  <p class="sub">输入任务，系统自动识别意图（代码/推理/创意/搜索/问答），路由到最合适的模型，记录选择理由和成本。</p>
+  <div class="input-card">
+    <textarea id="q" placeholder="输入任务…&#10;例如：帮我写一个快速排序的Python代码&#10;或：分析一下GPT和Claude的区别&#10;或：今天有什么AI新消息"></textarea>
+    <div class="preview" id="preview">输入后实时显示路由预测…</div>
+    <button class="btn" id="runBtn">路由并执行 →</button>
+  </div>
+  <div id="output"></div>
+  <div class="history" id="historyWrap" style="display:none">
+    <h3>本次会话历史</h3>
+    <div id="historyList"></div>
+  </div>
+</div>
+<script>
+const qEl=document.getElementById('q'), preview=document.getElementById('preview');
+const runBtn=document.getElementById('runBtn'), output=document.getElementById('output');
+const histWrap=document.getElementById('historyWrap'), histList=document.getElementById('historyList');
+const modePill=document.getElementById('modePill');
+const history=[];
+function esc(s){const d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML;}
+
+fetch('/api/health').then(r=>r.json()).then(d=>{
+  const p = d.providers&&d.providers.length?d.providers.join(', '):'无';
+  modePill.textContent=d.live_mode?`在线 · ${p}`:'离线模拟';
+  modePill.classList.toggle('live',d.live_mode);
+}).catch(()=>{modePill.textContent='未连接';});
+
+let previewTimer=null;
+qEl.addEventListener('input',()=>{
+  clearTimeout(previewTimer);
+  const q=qEl.value.trim();
+  if(!q){preview.innerHTML='输入后实时显示路由预测…';return;}
+  previewTimer=setTimeout(()=>{
+    fetch('/api/classify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})})
+    .then(r=>r.json()).then(d=>{
+      preview.innerHTML=`预测意图：<span class="intent">${esc(d.label)}</span>　目标模型：<span class="model">${esc(d.model)}</span>　理由：${esc(d.routing_reason)}`;
+    }).catch(()=>{});
+  },300);
+});
+
+function renderResult(d){
+  const obs=d.observability||{};
+  const usage=obs.usage||{};
+  const isOffline=d.provider==='offline';
+  return `<div class="result">
+    <div class="result-head">
+      <span class="tag intent">${esc(d.routing.intent_label||d.routing.intent)}</span>
+      <span class="tag ${isOffline?'offline':'model'}">${esc(d.model_used)}</span>
+      ${isOffline?'<span class="tag offline">离线模拟</span>':''}
+    </div>
+    <div class="answer-box">${esc(d.answer)}</div>
+    <div class="routing-box">
+      <b>路由决策：</b>${esc(d.routing.routing_reason)}
+    </div>
+    <div class="obs">
+      <div class="obs-card"><div class="n">${obs.total_latency_ms||'-'} ms</div><div class="l">总耗时</div></div>
+      <div class="obs-card"><div class="n">${obs.model_latency_ms||'-'} ms</div><div class="l">模型延迟</div></div>
+      <div class="obs-card"><div class="n">${usage.total_tokens||'—'}</div><div class="l">Token消耗</div></div>
+      <div class="obs-card"><div class="n">${esc(d.provider)}</div><div class="l">模型提供商</div></div>
+    </div>
+  </div>`;
+}
+
+runBtn.addEventListener('click',async()=>{
+  const q=qEl.value.trim(); if(!q) return;
+  runBtn.disabled=true; runBtn.textContent='路由中…';
+  output.innerHTML='<div class="empty">意图识别 → 路由决策 → 模型调用…</div>';
+  try{
+    const d=await fetch('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query:q})}).then(r=>r.json());
+    output.innerHTML=renderResult(d);
+    history.unshift({q,intent:d.routing.intent_label||d.routing.intent,ms:d.observability.total_latency_ms});
+    if(history.length>0){
+      histWrap.style.display='block';
+      histList.innerHTML=history.slice(0,8).map(h=>
+        `<div class="hist-item"><span class="q">${esc(h.q)}</span><span class="tag intent" style="font-size:10px">${esc(h.intent)}</span><span class="t">${h.ms}ms</span></div>`
+      ).join('');
+    }
+  }catch(e){output.innerHTML='<div class="empty">请求失败，确认后端已启动。</div>';}
+  finally{runBtn.disabled=false;runBtn.textContent='路由并执行 →';}
+});
+
+qEl.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){runBtn.click();}});
+</script>
+</body>
+</html>
