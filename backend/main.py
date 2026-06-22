@@ -9,6 +9,25 @@ app = FastAPI(title="LLM Router Agent")
 class QueryRequest(BaseModel):
     query: str
 
+@app.get("/api/info")
+def info():
+    """项目信息接口——面试官打开API第一眼就能看到这是什么。"""
+    return {
+        "name": "多模型智能路由 Agent",
+        "name_en": "LLM Router Agent",
+        "version": "1.0.0",
+        "description": "两级意图分类（规则+LLM兜底），路由到最合适的模型，记录成本和耗时",
+        "description_en": "Two-tier intent classification (rules + LLM fallback), routes to optimal model, tracks cost & latency",
+        "architecture": "two-tier classification, multi-model routing, full observability",
+        "github": "https://github.com/henghenghuang288/llm-router-agent",
+        "endpoints": [
+                "/api/health",
+                "/api/route",
+                "/api/classify"
+        ]
+}
+
+
 @app.get("/api/health")
 def health():
     providers = get_available_providers()
