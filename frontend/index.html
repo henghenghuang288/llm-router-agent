@@ -104,15 +104,24 @@ function renderResult(d){
   const obs=d.observability||{};
   const usage=obs.usage||{};
   const isOffline=d.provider==='offline';
+  const r=d.routing||{};
+  const clf=r.classifier||'rule';
+  const clfBadge = clf==='llm'
+    ? `<span class="tag" style="background:rgba(167,139,250,.15);color:#a78bfa;font-size:10px">LLM语义分类</span>`
+    : clf==='rule_fallback'
+    ? `<span class="tag" style="background:var(--line);color:var(--soft);font-size:10px">规则兜底</span>`
+    : `<span class="tag" style="background:rgba(86,211,100,.1);color:#56d364;font-size:10px">规则命中</span>`;
   return `<div class="result">
     <div class="result-head">
-      <span class="tag intent">${esc(d.routing.intent_label||d.routing.intent)}</span>
+      <span class="tag intent">${esc(r.intent_label||r.intent)}</span>
       <span class="tag ${isOffline?'offline':'model'}">${esc(d.model_used)}</span>
+      ${clfBadge}
       ${isOffline?'<span class="tag offline">离线模拟</span>':''}
     </div>
     <div class="answer-box">${esc(d.answer)}</div>
     <div class="routing-box">
-      <b>路由决策：</b>${esc(d.routing.routing_reason)}
+      <b>路由决策：</b>${esc(r.routing_reason)}
+      ${r.classifier_latency_ms?`　<span style="color:var(--soft);font-size:12px">（LLM分类耗时 ${r.classifier_latency_ms}ms）</span>`:''}
     </div>
     <div class="obs">
       <div class="obs-card"><div class="n">${obs.total_latency_ms||'-'} ms</div><div class="l">总耗时</div></div>

@@ -82,9 +82,18 @@ INTENT_RULES = [
 
 
 def classify_intent(query: str) -> dict:
-    """快速意图分类，纯规则，零延迟，不调用任何API。"""
+    """
+    两级意图分类：
+    1. 快速规则匹配（零延迟，零成本）
+    2. 规则匹配不到时返回 confidence=low，交给 route_and_answer 做 LLM 语义兜底
+
+    这是生产环境路由系统的标准设计：
+    - 大多数请求（80%+）被规则快速分流，不消耗额外token
+    - 少数模糊请求才走LLM分类，保证准确率
+    - 每次都记录是靠规则还是靠LLM分类的，方便后续优化规则
+    """
     query_lower = query.lower()
-    for rule in INTENT_RULES[:-1]:  # 最后一个是默认兜底
+    for rule in INTENT_RULES[:-1]:
         for pattern in rule["patterns"]:
             if re.search(pattern, query_lower):
                 return {
@@ -93,16 +102,86 @@ def classify_intent(query: str) -> dict:
                     "model": rule["model_preference"],
                     "routing_reason": rule["reason"],
                     "matched_pattern": pattern,
+                    "confidence": "high",
+                    "classifier": "rule",
                 }
-    # 兜底：简单问答
+    # 规则匹配不到 → 标记为低置信度，后续可做LLM语义分类
     default = INTENT_RULES[-1]
     return {
         "intent": default["intent"],
         "label": default["label"],
         "model": default["model_preference"],
-        "routing_reason": default["reason"],
+        "routing_reason": "规则未命中，降级为通用问答模式",
         "matched_pattern": None,
+        "confidence": "low",
+        "classifier": "rule_fallback",
     }
+
+
+async def classify_intent_with_llm(query: str) -> dict:
+    """
+    LLM语义分类兜底——仅在规则匹配置信度低时调用。
+    用最小的prompt让模型只输出一个意图标签，控制token消耗。
+    """
+    import os
+    from openai import AsyncOpenAI
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return classify_intent(query)  # 没有key就用规则结果
+
+    base_url = "https://api.deepseek.com" if os.environ.get("DEEPSEEK_API_KEY") else None
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url) if base_url else AsyncOpenAI(api_key=api_key)
+
+    system = (
+        "你是一个意图分类器。用户输入一段文字，你只需要输出一个标签，不要解释。\n"
+        "可选标签：code（写代码/调试）| reasoning（分析/推理）| creative（创意写作/文案）"
+        "| search_needed（需要实时信息）| simple_qa（其他）\n"
+        "只输出一个标签，不要其他任何内容。"
+    )
+
+    LABEL_MAP = {
+        "code": ("code", "代码任务", "LLM语义分类→代码任务"),
+        "reasoning": ("reasoning", "推理分析", "LLM语义分类→推理分析"),
+        "creative": ("creative", "创意写作", "LLM语义分类→创意写作"),
+        "search_needed": ("search_needed", "需要实时信息", "LLM语义分类→需要实时信息"),
+        "simple_qa": ("simple_qa", "简单问答", "LLM语义分类→简单问答"),
+    }
+
+    try:
+        t0 = time.perf_counter()
+        resp = await client.chat.completions.create(
+            model="deepseek-chat" if base_url else "gpt-4o-mini",
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": query}],
+            max_tokens=10,  # 只需要一个词，严格控制成本
+        )
+        latency = round((time.perf_counter() - t0) * 1000, 1)
+        label_raw = (resp.choices[0].message.content or "").strip().lower()
+
+        # 找到匹配的标签
+        matched_label = "simple_qa"
+        for k in LABEL_MAP:
+            if k in label_raw:
+                matched_label = k
+                break
+
+        intent, label_cn, reason = LABEL_MAP[matched_label]
+        # 找对应规则的模型偏好
+        model = next((r["model_preference"] for r in INTENT_RULES if r["intent"] == intent),
+                     INTENT_RULES[-1]["model_preference"])
+        return {
+            "intent": intent,
+            "label": label_cn,
+            "model": model,
+            "routing_reason": reason,
+            "matched_pattern": None,
+            "confidence": "medium",
+            "classifier": "llm",
+            "classifier_latency_ms": latency,
+        }
+    except Exception:
+        return classify_intent(query)
 
 
 # ── 模型调用 ──────────────────────────────────────────────────────────────
@@ -197,13 +276,19 @@ async def call_model(query: str, model: str, intent: str) -> dict[str, Any]:
 
 
 async def route_and_answer(query: str) -> dict[str, Any]:
-    """完整流程：意图分类 → 路由决策 → 模型调用 → 返回结果+可观测数据。"""
+    """完整流程：两级意图分类 → 路由决策 → 模型调用 → 返回结果+可观测数据。"""
     t0 = time.perf_counter()
 
-    # 1. 意图分类（纯规则，零延迟）
+    # 第一级：规则分类（零延迟）
     routing = classify_intent(query)
 
-    # 2. 调用模型
+    # 第二级：若置信度低且有可用API，用LLM做语义兜底分类
+    if routing["confidence"] == "low" and (
+        os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    ):
+        routing = await classify_intent_with_llm(query)
+
+    # 调用模型
     result = await call_model(query, routing["model"], routing["intent"])
 
     total_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -215,6 +300,9 @@ async def route_and_answer(query: str) -> dict[str, Any]:
             "intent_label": routing["label"],
             "model_selected": routing["model"],
             "routing_reason": routing["routing_reason"],
+            "confidence": routing.get("confidence", "high"),
+            "classifier": routing.get("classifier", "rule"),
+            "classifier_latency_ms": routing.get("classifier_latency_ms"),
         },
         "answer": result["answer"],
         "provider": result["provider"],
